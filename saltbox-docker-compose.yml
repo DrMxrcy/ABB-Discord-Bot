@@ -3,7 +3,7 @@ services:
   abb-discord-bot:
     restart: unless-stopped
     container_name: abb-discord-bot
-    image: drmxrcy/abb-discord-bot:latest
+    image: ghcr.io/drmxrcy/abb-discord-bot:latest
     hostname: abb-discord-bot
     environment:
       - PUID=1000

@@ -1,7 +1,7 @@
 version: '3'
 services:
   abb-discord-bot:
-    image: drmxrcy/abb-discord-bot:latest
+    image: ghcr.io/drmxrcy/abb-discord-bot:latest
     container_name: abb-discord-bot
     environment:
       - TZ=America/New_York
