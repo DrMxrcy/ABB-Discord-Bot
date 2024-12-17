@@ -188,18 +188,27 @@ async function isTorrentAlreadyAdded(magnetUrl: string): Promise<{ exists: boole
           }
 
           // If not in completed path, try to move it
-          const torrentInfo = await getTorrentInfoWithRetry(existingTorrent.id);
-          if (torrentInfo && torrentInfo.content_path) {
-            try {
+          try {
+            const torrentInfo = await getTorrentInfoWithRetry(existingTorrent.id);
+            if (torrentInfo && torrentInfo.content_path) {
               await moveCompletedDownload(existingTorrent.name, torrentInfo.content_path);
               await qbittorrent.removeTorrent(existingTorrent.id, false);
               logger.info(`Moved and removed completed torrent: ${existingTorrent.name}`);
               return { exists: true, status: 'already_downloaded' };
-            } catch (moveError) {
-              logger.error(`Failed to move completed torrent: ${moveError instanceof Error ? moveError.message : 'Unknown error'}`);
-              // If move fails, return completed status so user knows it's done but needs manual intervention
-              return { exists: true, status: 'completed_needs_move' };
+            } else {
+              logger.warn(`Torrent info available but no content path for: ${existingTorrent.name}`);
+              return { exists: true, status: 'completed_needs_attention' };
             }
+          } catch (torrentError) {
+            logger.error(`Failed to get torrent info: ${torrentError instanceof Error ? torrentError.message : 'Unknown error'}`);
+            // If we can't get the torrent info, try to remove the torrent
+            try {
+              await qbittorrent.removeTorrent(existingTorrent.id, false);
+              logger.info(`Removed problematic torrent: ${existingTorrent.name}`);
+            } catch (removeError) {
+              logger.error(`Failed to remove problematic torrent: ${removeError instanceof Error ? removeError.message : 'Unknown error'}`);
+            }
+            return { exists: true, status: 'completed_needs_attention' };
           }
         } catch (error) {
           logger.error(`Error handling completed torrent: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -417,28 +426,59 @@ async function ensureAuthenticated(): Promise<void> {
   }
 }
 
-// Add this new function to handle getting torrent info with retries
-async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 3, delayMs = 2000): Promise<any> {
+// Update the getTorrentInfoWithRetry function
+async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayMs = 3000): Promise<any> {
   let lastError: Error | null = null;
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const torrentInfo = await qbittorrent.getTorrent(torrentId);
+      // Ensure we're authenticated before each attempt
+      await ensureAuthenticated();
       
-      if (torrentInfo && torrentInfo.content_path) {
-        return torrentInfo;
+      // Get both torrent info and properties
+      const [torrentInfo, torrentProps] = await Promise.all([
+        qbittorrent.getTorrent(torrentId),
+        qbittorrent.getTorrentProperties(torrentId)
+      ]);
+
+      if (torrentInfo) {
+        // If content_path is not available, try to construct it from save path and name
+        if (!torrentInfo.content_path && torrentProps && torrentProps.save_path) {
+          const savePath = torrentProps.save_path;
+          const name = torrentInfo.name || torrentId;
+          torrentInfo.content_path = path.join(savePath, name);
+          
+          // Verify the constructed path exists
+          if (fs.existsSync(torrentInfo.content_path)) {
+            logger.debug(`Constructed content path: ${torrentInfo.content_path}`);
+            return torrentInfo;
+          }
+        } else if (torrentInfo.content_path) {
+          return torrentInfo;
+        }
       }
       
-      logger.debug(`Attempt ${attempt}/${maxRetries}: Torrent info retrieved but content path not ready yet`);
+      logger.debug(`Attempt ${attempt}/${maxRetries}: Waiting for torrent info to be ready`);
       await new Promise(resolve => setTimeout(resolve, delayMs));
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Unknown error');
       logger.debug(`Attempt ${attempt}/${maxRetries} failed: ${lastError.message}`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      
+      // If it's an authentication error, wait a bit longer
+      if (lastError.message.includes('403') || lastError.message.includes('Forbidden')) {
+        await new Promise(resolve => setTimeout(resolve, delayMs * 2));
+      } else {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
   }
 
-  throw new Error(`Failed to get torrent info after ${maxRetries} attempts: ${lastError?.message}`);
+  const errorMsg = lastError ? 
+    `Failed to get torrent info after ${maxRetries} attempts: ${lastError.message}` :
+    `Failed to get torrent info after ${maxRetries} attempts: Torrent info not available`;
+  
+  logger.error(errorMsg);
+  throw new Error(errorMsg);
 }
 
 // Add this helper function
