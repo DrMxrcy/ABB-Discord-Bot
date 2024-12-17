@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import { QBittorrentConfig, Task, TorrentData, AllData, DownloadingData, ExecResult } from '../interface/qbittorrent.interface';
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 
 dotenv.config();
 
@@ -62,7 +63,24 @@ const config: QBittorrentConfig = {
 };
 
 // Creating a new instance of QBittorrent with the defined configuration
-export const qbittorrent = new QBittorrent(config);
+export const qbittorrent = new QBittorrent({
+  ...config,
+  timeout: 10000, // 10 second timeout
+  baseUrl: QBITTORRENT_HOST,
+  username: QBITTORRENT_USERNAME,
+  password: QBITTORRENT_PASSWORD,
+});
+
+// Initialize qBittorrent connection
+export async function initializeQBittorrent(): Promise<void> {
+  try {
+    await qbittorrent.login(QBITTORRENT_USERNAME, QBITTORRENT_PASSWORD);
+    logger.info('Successfully connected to qBittorrent');
+  } catch (error) {
+    logger.error(`Failed to initialize qBittorrent connection: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw error;
+  }
+}
 
 // Function to download a magnet link using QBittorrent
 export async function downloadMagnet(magnet: string) {
@@ -257,8 +275,32 @@ async function moveCompletedDownload(torrentName: string, contentPath: string): 
   }
 }
 
+// Add authentication handling
+async function ensureAuthenticated(): Promise<void> {
+  try {
+    // Try to get torrent list to check if we're authenticated
+    await qbittorrent.listTorrents();
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('403') || error.message.includes('Forbidden'))) {
+      logger.info('Session expired, re-authenticating...');
+      try {
+        // Login again
+        await qbittorrent.login(QBITTORRENT_USERNAME, QBITTORRENT_PASSWORD);
+        logger.info('Re-authentication successful');
+      } catch (loginError) {
+        logger.error(`Failed to re-authenticate: ${loginError instanceof Error ? loginError.message : 'Unknown error'}`);
+        throw loginError;
+      }
+    } else {
+      throw error;
+    }
+  }
+}
+
 // Function to handle downloads
 export async function downloadHandler(client: Client, qbittorrent: QBittorrent): Promise<void> {
+  try {
+    await initializeQBittorrent();
     // Load the cache when the program starts
     //const cache = loadCache();
 
@@ -277,6 +319,9 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
   // Function to check the torrents
   const checkTorrents = async (): Promise<void> => {
     try {
+      // Ensure we're authenticated before making any requests
+      await ensureAuthenticated();
+
       // Get all the data from qbittorrent
       const allData: AllData = await qbittorrent.getAllData();
 
@@ -378,13 +423,23 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
       // Save the cache after each check
       //saveCache(isDownloading);
     } catch (error) {
-      // If an error occurred, log it
-      logger.error(`Error while checking torrents: ${(error as Error).message}, Stack: ${(error as Error).stack}`);
+      if (error instanceof Error) {
+        // Don't log authentication retry attempts as errors
+        if (!error.message.includes('403') && !error.message.includes('Forbidden')) {
+          logger.error(`Error while checking torrents: ${error.message}, Stack: ${error.stack}`);
+        }
+      }
+      // Wait a bit longer if we hit an error
+      await new Promise(resolve => setTimeout(resolve, 5000));
     }
   };
 
-  // Check the torrents every 10 seconds
-  setInterval(checkTorrents, 10000); 
+  // Check the torrents every 30 seconds
+  setInterval(checkTorrents, 30000); 
+  } catch (error) {
+    logger.error(`Failed to start download handler: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw error;
+  }
 }
 
 /*
