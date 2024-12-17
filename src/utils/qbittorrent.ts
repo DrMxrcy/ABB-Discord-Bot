@@ -304,48 +304,53 @@ export function queueUserTorrent(userId: string, bookName: string, i: ButtonInte
         return;
       }
 
-      // Get all the data from qbittorrent
-      let allData = await qbittorrent.getAllData();
-      let previousTorrents = allData.torrents;
-      
-      // Download the magnet URL
+      // Get initial torrent list
+      const initialData = await qbittorrent.getAllData();
+      const initialTorrents = initialData.torrents;
+
+      // Add the magnet link with proper configuration
       await downloadMagnet(magnetUrl);
+      logger.info(`Added magnet link for ${bookName}`);
 
-      // Log that we're waiting for a new torrent to appear
-      logger.debug('Waiting for new torrent to appear...');
+      // Wait for the torrent to appear in qBittorrent
+      let newTorrent: TorrentData | undefined;
+      let attempts = 0;
+      const maxAttempts = 10;
 
-      // Loop until a new torrent appears
-      while (true) {
-        // Get the updated data from qbittorrent
-        allData = await qbittorrent.getAllData();
-
-        // If a new torrent has appeared, break the loop
-        if (allData.torrents.length > previousTorrents.length) {
-          break;
-        }
-      
-        // Wait for a second before checking again
+      while (!newTorrent && attempts < maxAttempts) {
         await new Promise(resolve => setTimeout(resolve, 1000));
+        const currentData = await qbittorrent.getAllData();
+        
+        newTorrent = currentData.torrents.find(torrent => 
+          !initialTorrents.some(initial => initial.id === torrent.id)
+        );
+
+        attempts++;
+        logger.debug(`Waiting for torrent to appear, attempt ${attempts}/${maxAttempts}`);
       }
 
-      // Find the new torrent
-      const newTorrent = allData.torrents.find(torrent => !previousTorrents.some(prevTorrent => prevTorrent.id === torrent.id));
-
-      // If a new torrent was found, add it to the isDownloading map
-      if (newTorrent) {
-        const userData: DownloadingData = { userId, bookName, i, embedSent: false};
-        isDownloading.set(newTorrent.id, userData);
-      } else {
-        // If no new torrent was found, log a message
-        logger.info('No new torrent found');
+      if (!newTorrent) {
+        throw new Error('Failed to find newly added torrent');
       }
-      // Log the number of items in the isDownloading map
-      logger.debug('Number of items Downloading map: ' + isDownloading.size);
-      // Send a download embed
-      //senddownloadEmbed(i, userId, { name: bookName });
+
+      // Add to downloading map
+      const userData: DownloadingData = {
+        userId,
+        bookName,
+        i,
+        embedSent: false
+      };
+
+      isDownloading.set(newTorrent.id, userData);
+      logger.info(`Successfully queued ${bookName} for download. Active downloads: ${isDownloading.size}`);
+
+      // Initial download notification will be handled by the download handler
     } catch (error) {
-      // If an error occurred, log it
-      logger.error(`Error in queueUserTorrent: ${(error as Error).message}, Stack: ${(error as Error).stack}`);
+      logger.error(`Failed to queue torrent: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      await i.followUp({
+        content: 'Failed to start download. Please try again or contact administrator.',
+        ephemeral: true
+      });
     }
   });
 }
