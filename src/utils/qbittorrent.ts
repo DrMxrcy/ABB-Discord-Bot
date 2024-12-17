@@ -176,15 +176,34 @@ async function isTorrentAlreadyAdded(magnetUrl: string): Promise<{ exists: boole
       // If torrent is completed but still in qBittorrent, it needs to be moved
       if (isTorrentReadyForProcessing(existingTorrent)) {
         try {
+          // First check if it's already in the completed path
+          if (QBITTORRENT_COMPLETED_PATH) {
+            const allFiles = fs.readdirSync(QBITTORRENT_COMPLETED_PATH);
+            if (allFiles.some(file => file.includes(magnetHash))) {
+              // If it's already in completed path, just remove from qBittorrent
+              await qbittorrent.removeTorrent(existingTorrent.id, false);
+              logger.info(`Torrent already in completed path, removed from qBittorrent: ${existingTorrent.name}`);
+              return { exists: true, status: 'already_downloaded' };
+            }
+          }
+
+          // If not in completed path, try to move it
           const torrentInfo = await getTorrentInfoWithRetry(existingTorrent.id);
           if (torrentInfo && torrentInfo.content_path) {
-            await moveCompletedDownload(existingTorrent.name, torrentInfo.content_path);
-            await qbittorrent.removeTorrent(existingTorrent.id, false);
-            logger.info(`Moved and removed completed torrent: ${existingTorrent.name}`);
-            return { exists: true, status: 'already_downloaded' };
+            try {
+              await moveCompletedDownload(existingTorrent.name, torrentInfo.content_path);
+              await qbittorrent.removeTorrent(existingTorrent.id, false);
+              logger.info(`Moved and removed completed torrent: ${existingTorrent.name}`);
+              return { exists: true, status: 'already_downloaded' };
+            } catch (moveError) {
+              logger.error(`Failed to move completed torrent: ${moveError instanceof Error ? moveError.message : 'Unknown error'}`);
+              // If move fails, return completed status so user knows it's done but needs manual intervention
+              return { exists: true, status: 'completed_needs_move' };
+            }
           }
         } catch (error) {
-          logger.error(`Failed to move completed torrent: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          logger.error(`Error handling completed torrent: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          return { exists: true, status: 'completed_needs_attention' };
         }
       }
 
@@ -226,6 +245,12 @@ export function queueUserTorrent(userId: string, bookName: string, i: ButtonInte
             break;
           case 'completed':
             message = `This audiobook has finished downloading and is being moved to your library...`;
+            break;
+          case 'completed_needs_move':
+            message = `This audiobook has finished downloading but needs manual attention to move to your library.`;
+            break;
+          case 'completed_needs_attention':
+            message = `This audiobook has finished downloading but requires administrator attention.`;
             break;
           case 'queued':
             message = `This audiobook is queued for download!`;
