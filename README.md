@@ -88,14 +88,6 @@ If all was successful, your logs should look something like this:
 ## 📝 Logs
 The bot's logs are stored in the `./logs` directory on your host machine. This directory is mounted into the container at `/app/logs`.
 
-## 🙏 Acknowledgements
-
-This project was made possible thanks to the following repositories:
-
-- [AudioBookBay Scraper](https://github.com/licavalentin/audiobookbay): This repository provided the basic functions that this bot relies upon.
-
-Please visit these repositories and give them a star if you found them helpful.
-
 ### Saltbox Installation
 
 If you're using Saltbox, you can use the saltbox-docker-compose.yml instead:
@@ -119,3 +111,14 @@ Configure your .env file as described above, then:
 ```shell
 docker compose up -d
 ```
+
+
+## 🙏 Acknowledgements
+
+This project was made possible thanks to the following repositories:
+
+
+- [AudioBookBay Scraper](https://github.com/licavalentin/audiobookbay): This repository provided the basic functions that this bot relies upon.
+- [jamcalli](https://github.com/jamcalli): The original author of this project.
+
+Please visit these repositories and give them a star if you found them helpful.
