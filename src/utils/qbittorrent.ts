@@ -486,38 +486,44 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Ensure we're authenticated before each attempt
       await ensureAuthenticated();
       
-      // Get torrent info
+      // Get basic torrent info first
       const torrentInfo = await qbittorrent.getTorrent(torrentId);
+      logger.debug(`Attempt ${attempt}: Got torrent info for ${torrentId}`);
 
       if (torrentInfo) {
-        if (torrentInfo.content_path) {
-          return torrentInfo;
-        }
-        
-        // If content_path is not available, try to construct it from save path
-        if (torrentInfo.save_path) {
-          const savePath = torrentInfo.save_path;
-          const name = torrentInfo.name || torrentId;
-          torrentInfo.content_path = path.join(savePath, name);
-          
-          // Verify the constructed path exists
-          if (fs.existsSync(torrentInfo.content_path)) {
-            logger.debug(`Constructed content path: ${torrentInfo.content_path}`);
+        // Log the available torrent info for debugging
+        logger.debug(`Torrent info: ${JSON.stringify(torrentInfo)}`);
+
+        // Try different methods to get the file path
+        const possiblePaths = [
+          torrentInfo.content_path,
+          torrentInfo.save_path ? path.join(torrentInfo.save_path, torrentInfo.name) : null,
+          path.join(QBITTORRENT_DOWNLOAD_PATH, torrentInfo.name),
+          path.join(QBITTORRENT_BASE_PATH, 'completed', torrentInfo.name)
+        ].filter(Boolean);
+
+        // Try each possible path
+        for (const possiblePath of possiblePaths) {
+          if (possiblePath && fs.existsSync(possiblePath)) {
+            logger.debug(`Found valid path: ${possiblePath}`);
+            torrentInfo.content_path = possiblePath;
             return torrentInfo;
           }
         }
+
+        // If we have basic info but no valid path yet, wait and try again
+        logger.debug(`No valid path found on attempt ${attempt}, waiting...`);
+      } else {
+        logger.debug(`No torrent info returned on attempt ${attempt}`);
       }
-      
-      logger.debug(`Attempt ${attempt}/${maxRetries}: Waiting for torrent info to be ready`);
+
       await new Promise(resolve => setTimeout(resolve, delayMs));
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Unknown error');
       logger.debug(`Attempt ${attempt}/${maxRetries} failed: ${lastError.message}`);
       
-      // If it's an authentication error, wait a bit longer
       if (lastError.message.includes('403') || lastError.message.includes('Forbidden')) {
         await new Promise(resolve => setTimeout(resolve, delayMs * 2));
       } else {
@@ -534,13 +540,14 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
   throw new Error(errorMsg);
 }
 
-// Add this helper function
+// Update the isTorrentReadyForProcessing function
 function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
-  const readyStates = ['seeding', 'completed', 'uploading'];
+  const readyStates = ['seeding', 'completed', 'uploading', 'stalledUP'];
   const hasValidState = readyStates.includes(torrent.state);
+  const progress = torrent.progress || 0;
   
-  logger.debug(`Torrent ${torrent.name} state: ${torrent.state}, Ready: ${hasValidState}`);
-  return hasValidState;
+  logger.debug(`Torrent ${torrent.name} state: ${torrent.state}, progress: ${progress}, Ready: ${hasValidState}`);
+  return hasValidState && progress >= 1;
 }
 
 // Function to handle downloads
