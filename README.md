@@ -13,6 +13,8 @@ This bot allows you to:
 
 ## 🏁 Install
 
+### Standard Installation
+
 1. Create a Discord Bot
    - Go to https://discord.com/developers/applications
    - Create a new application (you can name it whatever, but AudiobookRequester is nice.) Feel free to use this icon: ![](./docs/images/ABB-Discord.png)
@@ -49,6 +51,7 @@ Set the following environment variables:
 - `QBITTORRENT_USERNAME`: qBittorrent username
 - `QBITTORRENT_PASSWORD`: qBittorrent password
 - `QBITTORRENT_CATEGORY`: qBittorrent category. This is an option env variable. Used for organizational purposes. 
+- `QBITTORRENT_COMPLETED_PATH`: (Optional) Path where completed downloads should be moved (e.g., /mnt/unionfs/Media/Audiobook/). If not specified, files will remain in qBittorrent's default download location.
 - `USE_PLEX`: TRUE or FALSE (If not true, then you can leave the other plex variables blank)
 - `PLEX_HOST`: Plex server address (e.g., http://localhost:32400)
 - `PLEX_TOKEN`: This is your X-Plex-Token. Find out how to get yours [here](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
@@ -66,6 +69,7 @@ QBITTORRENT_HOST=YOUR_QBITTORRENT_HOST
 QBITTORRENT_USERNAME=YOUR_QBITTORRENT_USERNAME
 QBITTORRENT_PASSWORD=YOUR_QBITTORRENT_PASSWORD
 QBITTORRENT_CATEGORY=QBITTORRENT_CATEGORY
+QBITTORRENT_COMPLETED_PATH=YOUR_QBITTORRENT_COMPLETED_PATH
 USE_PLEX=TRUE
 PLEX_HOST=YOUR_PLEX_HOST
 PLEX_TOKEN=YOUR_PLEX_TOKEN
@@ -81,6 +85,9 @@ If all was successful, your logs should look something like this:
 
 6. Lastly, use the command /scrape. The AudioBook Bay search query is very janky, so provide at least something to the title filter to narrow down your search results.
 
+## 📝 Logs
+The bot's logs are stored in the `./logs` directory on your host machine. This directory is mounted into the container at `/app/logs`.
+
 ## 🙏 Acknowledgements
 
 This project was made possible thanks to the following repositories:
@@ -88,3 +95,27 @@ This project was made possible thanks to the following repositories:
 - [AudioBookBay Scraper](https://github.com/licavalentin/audiobookbay): This repository provided the basic functions that this bot relies upon.
 
 Please visit these repositories and give them a star if you found them helpful.
+
+### Saltbox Installation
+
+If you're using Saltbox, you can use the saltbox-docker-compose.yml instead:
+
+```shell
+mkdir -p /opt/abb-discord-bot
+cd /opt/abb-discord-bot
+wget https://github.com/yourusername/ABB-Discord-Bot/releases/download/Release/saltbox-docker-compose.yml -O docker-compose.yml
+wget -O .env https://github.com/yourusername/ABB-Discord-Bot/releases/download/Release/example.env
+```
+
+The Saltbox version:
+- Uses the standard Saltbox network
+- Stores logs in `/opt/abb-discord-bot`
+- Uses standard Saltbox PUID/PGID settings
+- Includes proper Saltbox labels
+- Mounts `/mnt` for media access
+
+Configure your .env file as described above, then:
+
+```shell
+docker compose up -d
+```

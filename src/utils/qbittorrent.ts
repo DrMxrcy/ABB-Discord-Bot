@@ -6,6 +6,8 @@ import { Client, ButtonInteraction } from 'discord.js';
 import { senddownloadEmbed, senddownloadcompleteDM } from './sendEmbed.ts';
 import { promisify } from 'util';
 import { QBittorrentConfig, Task, TorrentData, AllData, DownloadingData, ExecResult } from '../interface/qbittorrent.interface';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -14,6 +16,7 @@ const QBITTORRENT_HOST = process.env.QBITTORRENT_HOST!;
 const QBITTORRENT_USERNAME = process.env.QBITTORRENT_USERNAME!;
 const QBITTORRENT_PASSWORD = process.env.QBITTORRENT_PASSWORD!;
 const USE_PLEX = process.env.USE_PLEX;
+const QBITTORRENT_COMPLETED_PATH = process.env.QBITTORRENT_COMPLETED_PATH;
 
 // Checking if the required environment variables are defined
 if (!QBITTORRENT_HOST || !QBITTORRENT_USERNAME || !QBITTORRENT_PASSWORD) {
@@ -35,6 +38,18 @@ if (USE_PLEX === 'TRUE') {
     // Ensure PLEX_HOST ends with a slash
     if (!PLEX_HOST.endsWith('/')) {
       PLEX_HOST += '/';
+    }
+  }
+}
+
+// Add validation check with other env checks
+if (QBITTORRENT_COMPLETED_PATH) {
+  // Ensure path exists
+  if (!fs.existsSync(QBITTORRENT_COMPLETED_PATH)) {
+    try {
+      fs.mkdirSync(QBITTORRENT_COMPLETED_PATH, { recursive: true });
+    } catch (error) {
+      logger.error(`Failed to create completed downloads directory: ${error}`);
     }
   }
 }
@@ -201,6 +216,30 @@ async function runCurlCommand(): Promise<void> {
   }
 }
 
+// Add new function to handle moving files
+async function moveCompletedDownload(torrentName: string, contentPath: string): Promise<void> {
+  try {
+    if (!QBITTORRENT_COMPLETED_PATH) {
+      logger.debug('No completed path specified, skipping file move');
+      return;
+    }
+
+    const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
+    
+    // Create author directory if it doesn't exist
+    if (!fs.existsSync(destinationPath)) {
+      fs.mkdirSync(destinationPath, { recursive: true });
+    }
+
+    // Move the content
+    fs.renameSync(contentPath, destinationPath);
+    logger.info(`Moved completed download to ${destinationPath}`);
+  } catch (error) {
+    logger.error(`Failed to move completed download: ${error}`);
+    throw error;
+  }
+}
+
 // Function to handle downloads
 export async function downloadHandler(client: Client, qbittorrent: QBittorrent): Promise<void> {
     // Load the cache when the program starts
@@ -251,11 +290,23 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
         if (torrent.state === 'seeding') {
           // If the torrent was not in the previous torrents array or it was downloading
           if (!previousTorrent || previousTorrent.state !== 'seeding') {
-            // Log a message, run the curl command, remove the torrent from qbittorrent, and log the result
-            logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
+            logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
+            
+            // Get the content path before removing from client
+            const torrentInfo = await qbittorrent.getTorrent(torrent.id);
+            const contentPath = torrentInfo.content_path;
+
+            // Move the completed download if path is configured
+            if (QBITTORRENT_COMPLETED_PATH) {
+              await moveCompletedDownload(torrent.name, contentPath);
+            }
+
             if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
               await runCurlCommand();
             }
+
+            // Log a message, run the curl command, remove the torrent from qbittorrent, and log the result
+            logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
             const result = await qbittorrent.removeTorrent(torrent.id, false);
             logger.info(`Removal result for ${torrent.name}: ${result}`);
   
