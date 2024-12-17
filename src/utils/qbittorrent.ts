@@ -18,6 +18,7 @@ const QBITTORRENT_USERNAME = process.env.QBITTORRENT_USERNAME!;
 const QBITTORRENT_PASSWORD = process.env.QBITTORRENT_PASSWORD!;
 const USE_PLEX = process.env.USE_PLEX;
 const QBITTORRENT_COMPLETED_PATH = process.env.QBITTORRENT_COMPLETED_PATH;
+const QBITTORRENT_DOWNLOAD_PATH = process.env.QBITTORRENT_DOWNLOAD_PATH;
 
 // Checking if the required environment variables are defined
 if (!QBITTORRENT_HOST || !QBITTORRENT_USERNAME || !QBITTORRENT_PASSWORD) {
@@ -53,6 +54,10 @@ if (QBITTORRENT_COMPLETED_PATH) {
       logger.error(`Failed to create completed downloads directory: ${error}`);
     }
   }
+}
+
+if (!QBITTORRENT_DOWNLOAD_PATH) {
+  logger.warn('QBITTORRENT_DOWNLOAD_PATH not set, will rely on qBittorrent default path');
 }
 
 // Creating a configuration object for QBittorrent
@@ -366,34 +371,63 @@ async function moveCompletedDownload(torrentName: string, contentPath: string): 
       throw new Error(`Source path does not exist: ${contentPath}`);
     }
 
-    const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
-    logger.debug(`Full destination path: ${destinationPath}`);
-
     const stats = fs.statSync(contentPath);
     
     if (stats.isDirectory()) {
-      logger.debug(`Moving directory: ${contentPath}`);
-      // For directories, copy recursively then remove source
-      fs.cpSync(contentPath, destinationPath, { 
-        recursive: true,
-        force: true,
-        errorOnExist: false
-      });
+      // For directories, find audio files
+      const files = fs.readdirSync(contentPath);
+      const audioFiles = files.filter(file => 
+        file.toLowerCase().endsWith('.m4a') || 
+        file.toLowerCase().endsWith('.mp3') || 
+        file.toLowerCase().endsWith('.m4b')
+      );
+
+      if (audioFiles.length === 0) {
+        throw new Error('No audio files found in torrent directory');
+      }
+
+      // Create author/book directory structure
+      const destinationDir = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
+      if (!fs.existsSync(destinationDir)) {
+        fs.mkdirSync(destinationDir, { recursive: true });
+      }
+
+      // Move each audio file
+      for (const audioFile of audioFiles) {
+        const sourcePath = path.join(contentPath, audioFile);
+        const destPath = path.join(destinationDir, audioFile);
+        
+        logger.debug(`Moving audio file from ${sourcePath} to ${destPath}`);
+        fs.copyFileSync(sourcePath, destPath);
+      }
+
+      // Remove source directory after successful copy
       fs.rmSync(contentPath, { recursive: true, force: true });
     } else {
-      logger.debug(`Moving file: ${contentPath}`);
-      // For single files
+      // For single files, check if it's an audio file
+      const isAudioFile = contentPath.toLowerCase().endsWith('.m4a') || 
+                         contentPath.toLowerCase().endsWith('.mp3') || 
+                         contentPath.toLowerCase().endsWith('.m4b');
+
+      if (!isAudioFile) {
+        throw new Error('Downloaded file is not a supported audio format');
+      }
+
+      const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
+      const destinationDir = path.dirname(destinationPath);
+
+      // Create directory if it doesn't exist
+      if (!fs.existsSync(destinationDir)) {
+        fs.mkdirSync(destinationDir, { recursive: true });
+      }
+
+      // Move the file
+      logger.debug(`Moving single audio file to ${destinationPath}`);
       fs.copyFileSync(contentPath, destinationPath);
       fs.unlinkSync(contentPath);
     }
 
-    // Verify the move was successful
-    if (!fs.existsSync(destinationPath)) {
-      throw new Error('Move operation completed but destination file/directory not found');
-    }
-
-    logger.info(`Successfully moved ${torrentName} to ${destinationPath}`);
-    return;
+    logger.info(`Successfully moved ${torrentName} to ${QBITTORRENT_COMPLETED_PATH}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error(`Failed to move completed download: ${errorMessage}`);
