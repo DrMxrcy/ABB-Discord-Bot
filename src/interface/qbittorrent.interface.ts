@@ -18,6 +18,19 @@ export interface TorrentData {
     save_path?: string;
     content_path?: string;
     progress?: number;
+    size?: number;
+    downloaded?: number;
+    files?: TorrentFile[];
+}
+
+export interface TorrentFile {
+    name: string;
+    size: number;
+    progress: number;
+    priority: number;
+    is_seed: boolean;
+    piece_range: number[];
+    availability: number;
 }
 
 export interface AllData {

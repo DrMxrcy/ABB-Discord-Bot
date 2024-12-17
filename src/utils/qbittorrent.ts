@@ -480,7 +480,24 @@ async function ensureAuthenticated(): Promise<void> {
   }
 }
 
-// Update the getTorrentInfoWithRetry function
+// Update the isTorrentReadyForProcessing function with all valid completed states
+function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
+  const readyStates = [
+    'uploading',     // Being seeded and data is being transferred
+    'pausedUP',      // Paused and finished downloading
+    'queuedUP',      // Queued for upload after completion
+    'stalledUP',     // Seeding but no connections
+    'checkingUP',    // Finished downloading and being checked
+    'forcedUP'       // Forced uploading
+  ];
+  const hasValidState = readyStates.includes(torrent.state);
+  const progress = torrent.progress || 0;
+  
+  logger.debug(`Torrent ${torrent.name} state: ${torrent.state}, progress: ${progress}, Ready: ${hasValidState}`);
+  return hasValidState && progress >= 1;
+}
+
+// Update getTorrentInfoWithRetry to use proper API endpoints
 async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayMs = 3000): Promise<any> {
   let lastError: Error | null = null;
   
@@ -488,18 +505,26 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
     try {
       await ensureAuthenticated();
       
-      // Get basic torrent info first
-      const torrentInfo = await qbittorrent.getTorrent(torrentId);
-      logger.debug(`Attempt ${attempt}: Got torrent info for ${torrentId}`);
+      // Get both basic info and properties
+      const [torrentInfo, torrentFiles] = await Promise.all([
+        qbittorrent.getTorrent(torrentId),
+        qbittorrent.getTorrentFiles(torrentId)
+      ]);
+
+      logger.debug(`Attempt ${attempt}: Got torrent info and files for ${torrentId}`);
+      logger.debug(`Torrent info: ${JSON.stringify(torrentInfo)}`);
+      logger.debug(`Torrent files: ${JSON.stringify(torrentFiles)}`);
 
       if (torrentInfo) {
-        // Log the available torrent info for debugging
-        logger.debug(`Torrent info: ${JSON.stringify(torrentInfo)}`);
-
         // Try different methods to get the file path
         const possiblePaths = [
+          // From torrent info
           torrentInfo.content_path,
+          // From save path + name
           torrentInfo.save_path ? path.join(torrentInfo.save_path, torrentInfo.name) : null,
+          // From first file path if available
+          torrentFiles?.[0]?.name ? path.join(QBITTORRENT_DOWNLOAD_PATH, torrentFiles[0].name) : null,
+          // Standard locations
           path.join(QBITTORRENT_DOWNLOAD_PATH, torrentInfo.name),
           path.join(QBITTORRENT_BASE_PATH, 'completed', torrentInfo.name)
         ].filter(Boolean);
@@ -511,43 +536,24 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
             torrentInfo.content_path = possiblePath;
             return torrentInfo;
           }
+          logger.debug(`Path not found: ${possiblePath}`);
         }
 
         // If we have basic info but no valid path yet, wait and try again
         logger.debug(`No valid path found on attempt ${attempt}, waiting...`);
-      } else {
-        logger.debug(`No torrent info returned on attempt ${attempt}`);
       }
 
       await new Promise(resolve => setTimeout(resolve, delayMs));
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Unknown error');
       logger.debug(`Attempt ${attempt}/${maxRetries} failed: ${lastError.message}`);
-      
-      if (lastError.message.includes('403') || lastError.message.includes('Forbidden')) {
-        await new Promise(resolve => setTimeout(resolve, delayMs * 2));
-      } else {
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
+      await new Promise(resolve => setTimeout(resolve, delayMs));
     }
   }
 
-  const errorMsg = lastError ? 
-    `Failed to get torrent info after ${maxRetries} attempts: ${lastError.message}` :
-    `Failed to get torrent info after ${maxRetries} attempts: Torrent info not available`;
-  
+  const errorMsg = `Failed to get torrent info after ${maxRetries} attempts: ${lastError?.message || 'Torrent info not available'}`;
   logger.error(errorMsg);
   throw new Error(errorMsg);
-}
-
-// Update the isTorrentReadyForProcessing function
-function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
-  const readyStates = ['seeding', 'completed', 'uploading', 'stalledUP'];
-  const hasValidState = readyStates.includes(torrent.state);
-  const progress = torrent.progress || 0;
-  
-  logger.debug(`Torrent ${torrent.name} state: ${torrent.state}, progress: ${progress}, Ready: ${hasValidState}`);
-  return hasValidState && progress >= 1;
 }
 
 // Function to handle downloads
