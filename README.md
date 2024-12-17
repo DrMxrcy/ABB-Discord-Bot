@@ -95,8 +95,8 @@ If you're using Saltbox, you can use the saltbox-docker-compose.yml instead:
 ```shell
 mkdir -p /opt/abb-discord-bot
 cd /opt/abb-discord-bot
-wget https://github.com/yourusername/ABB-Discord-Bot/releases/download/Release/saltbox-docker-compose.yml -O docker-compose.yml
-wget -O .env https://github.com/yourusername/ABB-Discord-Bot/releases/download/Release/example.env
+wget https://github.com/DrMxrcy/ABB-Discord-Bot/releases/download/Release/saltbox-docker-compose.yml -O docker-compose.yml
+wget -O .env https://github.com/DrMxrcy/ABB-Discord-Bot/releases/download/Release/example.env
 ```
 
 The Saltbox version:
