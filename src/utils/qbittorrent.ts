@@ -173,6 +173,21 @@ async function isTorrentAlreadyAdded(magnetUrl: string): Promise<{ exists: boole
     );
 
     if (existingTorrent) {
+      // If torrent is completed but still in qBittorrent, it needs to be moved
+      if (isTorrentReadyForProcessing(existingTorrent)) {
+        try {
+          const torrentInfo = await getTorrentInfoWithRetry(existingTorrent.id);
+          if (torrentInfo && torrentInfo.content_path) {
+            await moveCompletedDownload(existingTorrent.name, torrentInfo.content_path);
+            await qbittorrent.removeTorrent(existingTorrent.id, false);
+            logger.info(`Moved and removed completed torrent: ${existingTorrent.name}`);
+            return { exists: true, status: 'already_downloaded' };
+          }
+        } catch (error) {
+          logger.error(`Failed to move completed torrent: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
       const status = isTorrentReadyForProcessing(existingTorrent) ? 'completed' : 
                     existingTorrent.state === 'downloading' ? 'downloading' : 
                     'queued';
@@ -184,8 +199,6 @@ async function isTorrentAlreadyAdded(magnetUrl: string): Promise<{ exists: boole
     // Check completed path if configured
     if (QBITTORRENT_COMPLETED_PATH) {
       const allFiles = fs.readdirSync(QBITTORRENT_COMPLETED_PATH);
-      // Note: This is a simple check. You might want to implement a more sophisticated
-      // method to match completed downloads
       if (allFiles.some(file => file.includes(magnetHash))) {
         logger.info(`Torrent with hash ${magnetHash} was previously downloaded`);
         return { exists: true, status: 'already_downloaded' };
@@ -203,7 +216,6 @@ async function isTorrentAlreadyAdded(magnetUrl: string): Promise<{ exists: boole
 export function queueUserTorrent(userId: string, bookName: string, i: ButtonInteraction, magnetUrl: string): void {
   queue.addTask(async () => {
     try {
-      // Check if torrent is already being downloaded
       const { exists, status } = await isTorrentAlreadyAdded(magnetUrl);
       
       if (exists) {
@@ -213,13 +225,13 @@ export function queueUserTorrent(userId: string, bookName: string, i: ButtonInte
             message = `This audiobook is currently downloading!`;
             break;
           case 'completed':
-            message = `This audiobook has finished downloading and is being processed!`;
+            message = `This audiobook has finished downloading and is being moved to your library...`;
             break;
           case 'queued':
             message = `This audiobook is queued for download!`;
             break;
           case 'already_downloaded':
-            message = `This audiobook has already been downloaded and should be in your library!`;
+            message = `This audiobook has already been downloaded and is in your library!`;
             break;
           default:
             message = `This audiobook is already in the system!`;
