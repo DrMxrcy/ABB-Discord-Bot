@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import { QBittorrentConfig, Task, TorrentData, AllData, DownloadingData, ExecResult } from '../interface/qbittorrent.interface';
 import fs from 'fs';
 import path from 'path';
+import { setTimeout } from 'timers/promises';
 
 dotenv.config();
 
@@ -216,12 +217,35 @@ async function runCurlCommand(): Promise<void> {
   }
 }
 
-// Add new function to handle moving files
+// Add retry utility function
+async function retry<T>(
+  operation: () => Promise<T>,
+  retries = 3,
+  delay = 1000
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (retries > 0) {
+      logger.warn(`Operation failed, retrying... (${retries} attempts left)`);
+      await setTimeout(delay);
+      return retry(operation, retries - 1, delay);
+    }
+    throw error;
+  }
+}
+
+// Update the moveCompletedDownload function
 async function moveCompletedDownload(torrentName: string, contentPath: string): Promise<void> {
   try {
     if (!QBITTORRENT_COMPLETED_PATH) {
       logger.debug('No completed path specified, skipping file move');
       return;
+    }
+
+    // Verify source exists
+    if (!fs.existsSync(contentPath)) {
+      throw new Error(`Source path ${contentPath} does not exist`);
     }
 
     const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
@@ -231,9 +255,16 @@ async function moveCompletedDownload(torrentName: string, contentPath: string): 
       fs.mkdirSync(destinationPath, { recursive: true });
     }
 
-    // Move the content
-    fs.renameSync(contentPath, destinationPath);
-    logger.info(`Moved completed download to ${destinationPath}`);
+    // Move the content with retries
+    await retry(async () => {
+      try {
+        fs.renameSync(contentPath, destinationPath);
+        logger.info(`Moved completed download to ${destinationPath}`);
+      } catch (error) {
+        logger.error(`Failed to move file: ${error}`);
+        throw error;
+      }
+    });
   } catch (error) {
     logger.error(`Failed to move completed download: ${error}`);
     throw error;
@@ -260,8 +291,8 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
   // Function to check the torrents
   const checkTorrents = async (): Promise<void> => {
     try {
-      // Get all the data from qbittorrent
-      const allData: AllData = await qbittorrent.getAllData();
+      // Get all the data from qbittorrent with retry
+      const allData: AllData = await retry(() => qbittorrent.getAllData());
 
       // Get the torrents from the data
       const torrents: TorrentData[] = allData.torrents;
@@ -292,35 +323,38 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
           if (!previousTorrent || previousTorrent.state !== 'seeding') {
             logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
             
-            // Get the content path before removing from client
-            const torrentInfo = await qbittorrent.getTorrent(torrent.id);
-            const contentPath = torrentInfo.content_path;
+            try {
+              // Get the content path before removing from client
+              const torrentInfo = await retry(() => qbittorrent.getTorrent(torrent.id));
+              const contentPath = torrentInfo.content_path;
 
-            // Move the completed download if path is configured
-            if (QBITTORRENT_COMPLETED_PATH) {
-              await moveCompletedDownload(torrent.name, contentPath);
-            }
-
-            if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
-              await runCurlCommand();
-            }
-
-            // Log a message, run the curl command, remove the torrent from qbittorrent, and log the result
-            logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
-            const result = await qbittorrent.removeTorrent(torrent.id, false);
-            logger.info(`Removal result for ${torrent.name}: ${result}`);
-  
-            // If the torrent is in the isDownloading map
-            if (isDownloading.has(torrent.id)) {
-              // Get the user data, send a download complete DM, remove the torrent from the isDownloading map, and log the number of items in the map
-              const userData: DownloadingData = isDownloading.get(torrent.id)!;
-              // Only send the DM if the torrent has just finished downloading
-              if (!previousTorrent || previousTorrent.state !== 'seeding') {
-                await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
+              // Move the completed download if path is configured
+              if (QBITTORRENT_COMPLETED_PATH) {
+                await moveCompletedDownload(torrent.name, contentPath);
               }
-              isDownloading.delete(torrent.id);
-              logger.info('Number of items Downloading: ' + isDownloading.size);
-            } 
+
+              if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
+                await runCurlCommand();
+              }
+
+              // Only remove torrent after successful move
+              logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
+              const result = await retry(() => qbittorrent.removeTorrent(torrent.id, false));
+              logger.info(`Removal result for ${torrent.name}: ${result}`);
+  
+              // Handle user notifications
+              if (isDownloading.has(torrent.id)) {
+                const userData: DownloadingData = isDownloading.get(torrent.id)!;
+                if (!previousTorrent || previousTorrent.state !== 'seeding') {
+                  await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
+                }
+                isDownloading.delete(torrent.id);
+                logger.info('Number of items Downloading: ' + isDownloading.size);
+              }
+            } catch (error) {
+              logger.error(`Error processing completed torrent ${torrent.name}: ${error}`);
+              // Don't rethrow - let the process continue with other torrents
+            }
           }
         }
         // If the torrent is downloading and it's a new download
@@ -347,8 +381,9 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
       // Save the cache after each check
       //saveCache(isDownloading);
     } catch (error) {
-      // If an error occurred, log it
-      logger.error(`Error while checking torrents: ${(error as Error).message}, Stack: ${(error as Error).stack}`);
+      logger.error(`Error while checking torrents: ${error}`);
+      // Wait a bit longer before next check if there was an error
+      await setTimeout(5000);
     }
   };
 
