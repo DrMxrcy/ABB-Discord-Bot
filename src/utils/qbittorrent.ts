@@ -489,16 +489,17 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
       // Ensure we're authenticated before each attempt
       await ensureAuthenticated();
       
-      // Get both torrent info and properties
-      const [torrentInfo, torrentProps] = await Promise.all([
-        qbittorrent.getTorrent(torrentId),
-        qbittorrent.getTorrentProperties(torrentId)
-      ]);
+      // Get torrent info
+      const torrentInfo = await qbittorrent.getTorrent(torrentId);
 
       if (torrentInfo) {
-        // If content_path is not available, try to construct it from save path and name
-        if (!torrentInfo.content_path && torrentProps && torrentProps.save_path) {
-          const savePath = torrentProps.save_path;
+        if (torrentInfo.content_path) {
+          return torrentInfo;
+        }
+        
+        // If content_path is not available, try to construct it from save path
+        if (torrentInfo.save_path) {
+          const savePath = torrentInfo.save_path;
           const name = torrentInfo.name || torrentId;
           torrentInfo.content_path = path.join(savePath, name);
           
@@ -507,8 +508,6 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
             logger.debug(`Constructed content path: ${torrentInfo.content_path}`);
             return torrentInfo;
           }
-        } else if (torrentInfo.content_path) {
-          return torrentInfo;
         }
       }
       

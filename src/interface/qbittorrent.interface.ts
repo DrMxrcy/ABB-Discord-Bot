@@ -15,6 +15,8 @@ export interface TorrentData {
     state: string;
     name: string;
     isCompleted: boolean;
+    save_path?: string;
+    content_path?: string;
 }
 
 export interface AllData {
