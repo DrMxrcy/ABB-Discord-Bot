@@ -157,15 +157,84 @@ const queue: TaskQueue = new TaskQueue();
 // Create a new Map to hold the downloading data
 const isDownloading: Map<string, DownloadingData> = new Map();
 
+// Add this new function to check for existing torrents
+async function isTorrentAlreadyAdded(magnetUrl: string): Promise<{ exists: boolean; status: string }> {
+  try {
+    const allData = await qbittorrent.getAllData();
+    const magnetHash = magnetUrl.split('btih:')[1]?.split('&')[0].toLowerCase();
+    
+    if (!magnetHash) {
+      logger.warn('Could not extract hash from magnet URL');
+      return { exists: false, status: 'unknown' };
+    }
+
+    const existingTorrent = allData.torrents.find(torrent => 
+      torrent.id.toLowerCase() === magnetHash
+    );
+
+    if (existingTorrent) {
+      const status = isTorrentReadyForProcessing(existingTorrent) ? 'completed' : 
+                    existingTorrent.state === 'downloading' ? 'downloading' : 
+                    'queued';
+      
+      logger.info(`Torrent with hash ${magnetHash} is already ${status}`);
+      return { exists: true, status };
+    }
+
+    // Check completed path if configured
+    if (QBITTORRENT_COMPLETED_PATH) {
+      const allFiles = fs.readdirSync(QBITTORRENT_COMPLETED_PATH);
+      // Note: This is a simple check. You might want to implement a more sophisticated
+      // method to match completed downloads
+      if (allFiles.some(file => file.includes(magnetHash))) {
+        logger.info(`Torrent with hash ${magnetHash} was previously downloaded`);
+        return { exists: true, status: 'already_downloaded' };
+      }
+    }
+
+    return { exists: false, status: 'not_found' };
+  } catch (error) {
+    logger.error(`Error checking for existing torrent: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    return { exists: false, status: 'error' };
+  }
+}
+
 // Function to queue a user torrent
 export function queueUserTorrent(userId: string, bookName: string, i: ButtonInteraction, magnetUrl: string): void {
-  
-  // Add a new task to the queue
   queue.addTask(async () => {
     try {
+      // Check if torrent is already being downloaded
+      const { exists, status } = await isTorrentAlreadyAdded(magnetUrl);
+      
+      if (exists) {
+        let message = '';
+        switch (status) {
+          case 'downloading':
+            message = `This audiobook is currently downloading!`;
+            break;
+          case 'completed':
+            message = `This audiobook has finished downloading and is being processed!`;
+            break;
+          case 'queued':
+            message = `This audiobook is queued for download!`;
+            break;
+          case 'already_downloaded':
+            message = `This audiobook has already been downloaded and should be in your library!`;
+            break;
+          default:
+            message = `This audiobook is already in the system!`;
+        }
+
+        logger.warn(`Torrent for "${bookName}" - status: ${status}`);
+        await i.followUp({
+          content: message,
+          ephemeral: true
+        });
+        return;
+      }
+
       // Get all the data from qbittorrent
       let allData = await qbittorrent.getAllData();
-      // Store the current torrents
       let previousTorrents = allData.torrents;
       
       // Download the magnet URL
