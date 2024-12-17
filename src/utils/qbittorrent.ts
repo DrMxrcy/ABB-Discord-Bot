@@ -485,7 +485,7 @@ async function ensureAuthenticated(): Promise<void> {
   }
 }
 
-// Update the isTorrentReadyForProcessing function with more detailed logging
+// Update the isTorrentReadyForProcessing function with stricter checks
 function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
   const readyStates = [
     'uploading',     // Being seeded and data is being transferred
@@ -496,19 +496,44 @@ function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
     'forcedUP',      // Forced uploading
     'seeding'        // Add explicit seeding state
   ];
+
   const hasValidState = readyStates.includes(torrent.state);
   const progress = torrent.progress || 0;
+  const isFullyDownloaded = torrent.amount_left === 0;
+  const hasCompletedTime = torrent.completion_on > 0;
   
   logger.debug(`Torrent ${torrent.name}:`);
   logger.debug(`- State: ${torrent.state}`);
   logger.debug(`- Progress: ${progress}`);
+  logger.debug(`- Amount Left: ${torrent.amount_left}`);
+  logger.debug(`- Completion Time: ${torrent.completion_on}`);
   logger.debug(`- Valid State: ${hasValidState}`);
-  logger.debug(`- Ready for Processing: ${hasValidState && progress >= 1}`);
+  logger.debug(`- Is Fully Downloaded: ${isFullyDownloaded}`);
+  logger.debug(`- Has Completion Time: ${hasCompletedTime}`);
+
+  // Only consider ready if:
+  // 1. Has a valid state
+  // 2. Progress is 100%
+  // 3. Amount left is 0
+  // 4. Has a completion timestamp
+  const isReady = hasValidState && 
+                 progress >= 1 && 
+                 isFullyDownloaded && 
+                 hasCompletedTime;
+
+  logger.debug(`- Ready for Processing: ${isReady}`);
   
-  return hasValidState && progress >= 1;
+  return isReady;
 }
 
-// Update getTorrentInfoWithRetry to use correct API methods
+// Add a delay before processing completed torrents
+async function waitForTorrentToSettle(torrent: TorrentData): Promise<void> {
+  const settleTime = 5000; // 5 seconds
+  logger.debug(`Waiting ${settleTime}ms for torrent to settle: ${torrent.name}`);
+  await new Promise(resolve => setTimeout(resolve, settleTime));
+}
+
+// Update getTorrentInfoWithRetry to use more generic path checking
 async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayMs = 3000): Promise<any> {
   let lastError: Error | null = null;
   
@@ -516,7 +541,6 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
     try {
       await ensureAuthenticated();
       
-      // Get torrent info using the correct API method
       const torrentInfo = await qbittorrent.getTorrent(torrentId);
       logger.debug(`Attempt ${attempt}: Got torrent info for ${torrentId}`);
       logger.debug(`Torrent info: ${JSON.stringify(torrentInfo)}`);
@@ -524,38 +548,42 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
       if (torrentInfo) {
         // Try different methods to get the file path
         const possiblePaths = [
-          // From torrent info
+          // Direct paths
           torrentInfo.content_path,
-          // From save path + name
+          // Standard paths
+          path.join(QBITTORRENT_COMPLETED_PATH, torrentInfo.name),
+          // From save path
           torrentInfo.save_path ? path.join(torrentInfo.save_path, torrentInfo.name) : null,
-          // From download path
-          path.join(QBITTORRENT_DOWNLOAD_PATH, torrentInfo.name),
-          // From completed path
-          path.join(QBITTORRENT_BASE_PATH, 'completed', torrentInfo.name),
-          // Try with hash
-          path.join(QBITTORRENT_DOWNLOAD_PATH, torrentId),
-          // Try alternative paths
-          path.join(QBITTORRENT_BASE_PATH, 'downloads', torrentInfo.name),
-          path.join(QBITTORRENT_BASE_PATH, torrentInfo.name)
+          // Search in completed directory
+          ...searchCompletedDirectory(torrentInfo.name)
         ].filter(Boolean);
+
+        // Log all possible paths we're checking
+        logger.debug('Checking possible paths:');
+        possiblePaths.forEach(p => logger.debug(`- ${p}`));
 
         // Try each possible path
         for (const possiblePath of possiblePaths) {
+          logger.debug(`Checking path: ${possiblePath}`);
           if (possiblePath && fs.existsSync(possiblePath)) {
-            logger.debug(`Found valid path: ${possiblePath}`);
-            torrentInfo.content_path = possiblePath;
-            return torrentInfo;
-          }
-          logger.debug(`Path not found: ${possiblePath}`);
-        }
-
-        // If we have basic info but no valid path yet, try to construct it
-        if (torrentInfo.save_path && torrentInfo.name) {
-          const constructedPath = path.join(torrentInfo.save_path, torrentInfo.name);
-          logger.debug(`Trying constructed path: ${constructedPath}`);
-          if (fs.existsSync(constructedPath)) {
-            torrentInfo.content_path = constructedPath;
-            return torrentInfo;
+            // Check if it's a directory and contains audio files
+            if (fs.statSync(possiblePath).isDirectory()) {
+              const files = fs.readdirSync(possiblePath);
+              const hasAudioFiles = files.some(file => 
+                file.toLowerCase().endsWith('.m4a') || 
+                file.toLowerCase().endsWith('.mp3') || 
+                file.toLowerCase().endsWith('.m4b')
+              );
+              if (hasAudioFiles) {
+                logger.debug(`Found valid path with audio files: ${possiblePath}`);
+                torrentInfo.content_path = possiblePath;
+                return torrentInfo;
+              }
+            } else if (possiblePath.match(/\.(m4a|mp3|m4b)$/i)) {
+              logger.debug(`Found valid audio file: ${possiblePath}`);
+              torrentInfo.content_path = possiblePath;
+              return torrentInfo;
+            }
           }
         }
 
@@ -573,6 +601,42 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
   const errorMsg = `Failed to get torrent info after ${maxRetries} attempts: ${lastError?.message || 'Torrent info not available'}`;
   logger.error(errorMsg);
   throw new Error(errorMsg);
+}
+
+// Update searchCompletedDirectory to be more thorough
+function searchCompletedDirectory(torrentName: string): string[] {
+  const paths: string[] = [];
+  if (!QBITTORRENT_COMPLETED_PATH) return paths;
+
+  try {
+    const dirs = fs.readdirSync(QBITTORRENT_COMPLETED_PATH);
+    for (const dir of dirs) {
+      const fullPath = path.join(QBITTORRENT_COMPLETED_PATH, dir);
+      if (fs.statSync(fullPath).isDirectory()) {
+        // Check if directory name contains the torrent name (case insensitive)
+        if (dir.toLowerCase().includes(torrentName.toLowerCase())) {
+          paths.push(fullPath);
+        }
+        // Also check subdirectories
+        try {
+          const subDirs = fs.readdirSync(fullPath);
+          for (const subDir of subDirs) {
+            const subPath = path.join(fullPath, subDir);
+            if (fs.statSync(subPath).isDirectory() && 
+                subDir.toLowerCase().includes(torrentName.toLowerCase())) {
+              paths.push(subPath);
+            }
+          }
+        } catch (subError) {
+          logger.debug(`Error reading subdirectory ${fullPath}: ${subError instanceof Error ? subError.message : 'Unknown error'}`);
+        }
+      }
+    }
+  } catch (error) {
+    logger.error(`Error searching completed directory: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+
+  return paths;
 }
 
 // Function to handle downloads
@@ -633,6 +697,16 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
           if (isTorrentReadyForProcessing(torrent)) {
             logger.info(`Torrent ${torrent.name} is ready for processing`);
             if (!previousTorrent || !isTorrentReadyForProcessing(previousTorrent)) {
+              // Add delay before processing
+              await waitForTorrentToSettle(torrent);
+              
+              // Check again after waiting to ensure torrent is still ready
+              const currentTorrentInfo = await qbittorrent.getTorrent(torrent.id);
+              if (!currentTorrentInfo || !isTorrentReadyForProcessing(currentTorrentInfo)) {
+                logger.debug(`Torrent ${torrent.name} not ready after settling time, will try again later`);
+                return;
+              }
+
               logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
               
               try {
