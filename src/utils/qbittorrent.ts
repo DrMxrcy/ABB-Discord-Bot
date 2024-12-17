@@ -17,8 +17,11 @@ const QBITTORRENT_HOST = process.env.QBITTORRENT_HOST!;
 const QBITTORRENT_USERNAME = process.env.QBITTORRENT_USERNAME!;
 const QBITTORRENT_PASSWORD = process.env.QBITTORRENT_PASSWORD!;
 const USE_PLEX = process.env.USE_PLEX;
-const QBITTORRENT_COMPLETED_PATH = process.env.QBITTORRENT_COMPLETED_PATH;
-const QBITTORRENT_DOWNLOAD_PATH = process.env.QBITTORRENT_DOWNLOAD_PATH;
+const QBITTORRENT_BASE_PATH = process.env.QBITTORRENT_BASE_PATH || '/mnt/unionfs/downloads/torrents/qbittorrent';
+const QBITTORRENT_DOWNLOAD_PATH = path.join(QBITTORRENT_BASE_PATH, 'incoming');
+const QBITTORRENT_COMPLETED_PATH = path.join(QBITTORRENT_BASE_PATH, 'completed');
+const QBITTORRENT_TORRENTS_PATH = path.join(QBITTORRENT_BASE_PATH, 'torrents');
+const QBITTORRENT_WATCHED_PATH = path.join(QBITTORRENT_BASE_PATH, 'watched');
 
 // Checking if the required environment variables are defined
 if (!QBITTORRENT_HOST || !QBITTORRENT_USERNAME || !QBITTORRENT_PASSWORD) {
@@ -59,6 +62,24 @@ if (QBITTORRENT_COMPLETED_PATH) {
 if (!QBITTORRENT_DOWNLOAD_PATH) {
   logger.warn('QBITTORRENT_DOWNLOAD_PATH not set, will rely on qBittorrent default path');
 }
+
+// Add validation for the paths
+if (!fs.existsSync(QBITTORRENT_BASE_PATH)) {
+  logger.error(`qBittorrent base path does not exist: ${QBITTORRENT_BASE_PATH}`);
+}
+
+// Ensure required directories exist
+['incoming', 'completed', 'torrents', 'watched'].forEach(dir => {
+  const dirPath = path.join(QBITTORRENT_BASE_PATH, dir);
+  if (!fs.existsSync(dirPath)) {
+    try {
+      fs.mkdirSync(dirPath, { recursive: true });
+      logger.info(`Created directory: ${dirPath}`);
+    } catch (error) {
+      logger.error(`Failed to create directory ${dirPath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+});
 
 // Creating a configuration object for QBittorrent
 const config: QBittorrentConfig = {

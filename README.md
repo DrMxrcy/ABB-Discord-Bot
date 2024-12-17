@@ -122,3 +122,26 @@ This project was made possible thanks to the following repositories:
 - [jamcalli](https://github.com/jamcalli): The original author of this project.
 
 Please visit these repositories and give them a star if you found them helpful.
+
+## Environment Variables
+
+### Required Variables
+- `DISCORD_TOKEN`: Your Discord bot token
+- `DISCORD_CLIENT_ID`: Your Discord application client ID
+- `DISCORD_GUILD_ID`: Your Discord server ID
+- `QBITTORRENT_HOST`: qBittorrent WebUI host (e.g., http://qbittorrentvpn:8080)
+- `QBITTORRENT_USERNAME`: qBittorrent WebUI username
+- `QBITTORRENT_PASSWORD`: qBittorrent WebUI password
+
+### Optional Variables
+- `QBITTORRENT_BASE_PATH`: Base path for qBittorrent operations (default: '/mnt/unionfs/downloads/torrents/qbittorrent')
+  - The following subdirectories will be automatically created and used:
+    - `incoming/`: Active downloads directory
+    - `completed/`: Temporary storage for completed downloads
+    - `torrents/`: Torrent files storage
+    - `watched/`: Watched directory for new torrents
+- `QBITTORRENT_CATEGORY`: Category to assign to downloads (optional)
+- `USE_PLEX`: Set to 'TRUE' to enable Plex integration
+- `PLEX_HOST`: Plex server address (required if USE_PLEX=TRUE)
+- `PLEX_TOKEN`: Plex authentication token (required if USE_PLEX=TRUE)
+- `PLEX_LIBRARY_NUM`: Plex library section number (required if USE_PLEX=TRUE)
