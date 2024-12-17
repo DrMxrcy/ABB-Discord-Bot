@@ -238,39 +238,53 @@ async function runCurlCommand(): Promise<void> {
 async function moveCompletedDownload(torrentName: string, contentPath: string): Promise<void> {
   try {
     if (!QBITTORRENT_COMPLETED_PATH) {
-      logger.debug('No completed path specified, skipping file move');
+      logger.warn('QBITTORRENT_COMPLETED_PATH not set, skipping move operation');
       return;
     }
 
-    // Verify source path exists
+    logger.info(`Starting move operation for ${torrentName}`);
+    logger.debug(`Source path: ${contentPath}`);
+    logger.debug(`Destination base path: ${QBITTORRENT_COMPLETED_PATH}`);
+
+    // Ensure source exists
     if (!fs.existsSync(contentPath)) {
       throw new Error(`Source path does not exist: ${contentPath}`);
     }
 
     const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
-    
-    // Create destination directory if it doesn't exist
-    if (!fs.existsSync(path.dirname(destinationPath))) {
-      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-    }
+    logger.debug(`Full destination path: ${destinationPath}`);
 
-    // Check if it's a directory or file
     const stats = fs.statSync(contentPath);
+    
     if (stats.isDirectory()) {
-      // For directories, we need to copy recursively
-      fs.cpSync(contentPath, destinationPath, { recursive: true });
-      // After successful copy, remove source
+      logger.debug(`Moving directory: ${contentPath}`);
+      // For directories, copy recursively then remove source
+      fs.cpSync(contentPath, destinationPath, { 
+        recursive: true,
+        force: true,
+        errorOnExist: false
+      });
       fs.rmSync(contentPath, { recursive: true, force: true });
     } else {
+      logger.debug(`Moving file: ${contentPath}`);
       // For single files
       fs.copyFileSync(contentPath, destinationPath);
       fs.unlinkSync(contentPath);
     }
 
-    logger.info(`Successfully moved completed download from ${contentPath} to ${destinationPath}`);
+    // Verify the move was successful
+    if (!fs.existsSync(destinationPath)) {
+      throw new Error('Move operation completed but destination file/directory not found');
+    }
+
+    logger.info(`Successfully moved ${torrentName} to ${destinationPath}`);
     return;
   } catch (error) {
-    logger.error(`Failed to move completed download: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    logger.error(`Failed to move completed download: ${errorMessage}`);
+    logger.error(`Move operation failed for torrent: ${torrentName}`);
+    logger.error(`Source path: ${contentPath}`);
+    logger.error(`Destination path: ${QBITTORRENT_COMPLETED_PATH}`);
     throw error;
   }
 }
@@ -295,6 +309,39 @@ async function ensureAuthenticated(): Promise<void> {
       throw error;
     }
   }
+}
+
+// Add this new function to handle getting torrent info with retries
+async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 3, delayMs = 2000): Promise<any> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const torrentInfo = await qbittorrent.getTorrent(torrentId);
+      
+      if (torrentInfo && torrentInfo.content_path) {
+        return torrentInfo;
+      }
+      
+      logger.debug(`Attempt ${attempt}/${maxRetries}: Torrent info retrieved but content path not ready yet`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Unknown error');
+      logger.debug(`Attempt ${attempt}/${maxRetries} failed: ${lastError.message}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw new Error(`Failed to get torrent info after ${maxRetries} attempts: ${lastError?.message}`);
+}
+
+// Add this helper function
+function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
+  const readyStates = ['seeding', 'completed', 'uploading'];
+  const hasValidState = readyStates.includes(torrent.state);
+  
+  logger.debug(`Torrent ${torrent.name} state: ${torrent.state}, Ready: ${hasValidState}`);
+  return hasValidState;
 }
 
 // Function to handle downloads
@@ -348,50 +395,51 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
         try {
           const previousTorrent = previousTorrents.find(t => t.id === torrent.id);
 
-          if (torrent.state === 'seeding' || torrent.state === 'completed') {
-            if (!previousTorrent || (previousTorrent.state !== 'seeding' && previousTorrent.state !== 'completed')) {
+          if (isTorrentReadyForProcessing(torrent)) {
+            if (!previousTorrent || !isTorrentReadyForProcessing(previousTorrent)) {
               logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
               
-              // Get the content path before removing from client
-              const torrentInfo = await qbittorrent.getTorrent(torrent.id);
-              
-              if (!torrentInfo || !torrentInfo.content_path) {
-                throw new Error(`Unable to get content path for torrent: ${torrent.name}`);
-              }
-
-              const contentPath = torrentInfo.content_path;
-
-              // Move the completed download if path is configured
-              if (QBITTORRENT_COMPLETED_PATH) {
-                try {
-                  await moveCompletedDownload(torrent.name, contentPath);
-                  logger.info(`Successfully processed move for: ${torrent.name}`);
-                } catch (moveError) {
-                  logger.error(`Failed to move torrent ${torrent.name}: ${moveError instanceof Error ? moveError.message : 'Unknown error'}`);
-                  // Don't remove the torrent if move failed
-                  return;
-                }
-              }
-
-              // Only proceed with removal if move was successful or not required
-              if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
-                await runCurlCommand();
-              }
-
-              // Remove torrent only after successful move
               try {
-                const result = await qbittorrent.removeTorrent(torrent.id, false);
-                logger.info(`Removal result for ${torrent.name}: ${result}`);
-              } catch (removeError) {
-                logger.error(`Failed to remove torrent ${torrent.name}: ${removeError instanceof Error ? removeError.message : 'Unknown error'}`);
-              }
+                // Use the new retry function
+                const torrentInfo = await getTorrentInfoWithRetry(torrent.id);
+                
+                if (!torrentInfo || !torrentInfo.content_path) {
+                  throw new Error(`Unable to get content path for torrent: ${torrent.name}`);
+                }
 
-              // Handle completion notification
-              if (isDownloading.has(torrent.id)) {
-                const userData = isDownloading.get(torrent.id)!;
-                await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
-                isDownloading.delete(torrent.id);
-                logger.info('Number of items Downloading: ' + isDownloading.size);
+                const contentPath = torrentInfo.content_path;
+                logger.debug(`Content path for ${torrent.name}: ${contentPath}`);
+
+                // Move the completed download if path is configured
+                if (QBITTORRENT_COMPLETED_PATH) {
+                  try {
+                    await moveCompletedDownload(torrent.name, contentPath);
+                    logger.info(`Successfully processed move for: ${torrent.name}`);
+                    
+                    // Only proceed with Plex refresh after successful move
+                    if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
+                      await runCurlCommand();
+                    }
+
+                    // Remove torrent only after successful move
+                    await qbittorrent.removeTorrent(torrent.id, false);
+                    logger.info(`Successfully removed torrent: ${torrent.name}`);
+
+                    // Handle completion notification
+                    if (isDownloading.has(torrent.id)) {
+                      const userData = isDownloading.get(torrent.id)!;
+                      await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
+                      isDownloading.delete(torrent.id);
+                      logger.info(`Completed processing for ${torrent.name}. Remaining downloads: ${isDownloading.size}`);
+                    }
+                  } catch (moveError) {
+                    logger.error(`Failed to process completed download for ${torrent.name}: ${moveError instanceof Error ? moveError.message : 'Unknown error'}`);
+                    // Don't proceed with removal if move failed
+                    return;
+                  }
+                }
+              } catch (error) {
+                logger.error(`Error processing completed torrent ${torrent.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
               }
             }
           }
