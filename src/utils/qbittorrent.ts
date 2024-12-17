@@ -508,7 +508,7 @@ function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
   return hasValidState && progress >= 1;
 }
 
-// Update getTorrentInfoWithRetry to use proper API endpoints
+// Update getTorrentInfoWithRetry to use correct API methods
 async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayMs = 3000): Promise<any> {
   let lastError: Error | null = null;
   
@@ -516,15 +516,10 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
     try {
       await ensureAuthenticated();
       
-      // Get both basic info and properties
-      const [torrentInfo, torrentFiles] = await Promise.all([
-        qbittorrent.getTorrent(torrentId),
-        qbittorrent.getTorrentFiles(torrentId)
-      ]);
-
-      logger.debug(`Attempt ${attempt}: Got torrent info and files for ${torrentId}`);
+      // Get torrent info using the correct API method
+      const torrentInfo = await qbittorrent.getTorrent(torrentId);
+      logger.debug(`Attempt ${attempt}: Got torrent info for ${torrentId}`);
       logger.debug(`Torrent info: ${JSON.stringify(torrentInfo)}`);
-      logger.debug(`Torrent files: ${JSON.stringify(torrentFiles)}`);
 
       if (torrentInfo) {
         // Try different methods to get the file path
@@ -533,11 +528,15 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
           torrentInfo.content_path,
           // From save path + name
           torrentInfo.save_path ? path.join(torrentInfo.save_path, torrentInfo.name) : null,
-          // From first file path if available
-          torrentFiles?.[0]?.name ? path.join(QBITTORRENT_DOWNLOAD_PATH, torrentFiles[0].name) : null,
-          // Standard locations
+          // From download path
           path.join(QBITTORRENT_DOWNLOAD_PATH, torrentInfo.name),
-          path.join(QBITTORRENT_BASE_PATH, 'completed', torrentInfo.name)
+          // From completed path
+          path.join(QBITTORRENT_BASE_PATH, 'completed', torrentInfo.name),
+          // Try with hash
+          path.join(QBITTORRENT_DOWNLOAD_PATH, torrentId),
+          // Try alternative paths
+          path.join(QBITTORRENT_BASE_PATH, 'downloads', torrentInfo.name),
+          path.join(QBITTORRENT_BASE_PATH, torrentInfo.name)
         ].filter(Boolean);
 
         // Try each possible path
@@ -550,7 +549,16 @@ async function getTorrentInfoWithRetry(torrentId: string, maxRetries = 5, delayM
           logger.debug(`Path not found: ${possiblePath}`);
         }
 
-        // If we have basic info but no valid path yet, wait and try again
+        // If we have basic info but no valid path yet, try to construct it
+        if (torrentInfo.save_path && torrentInfo.name) {
+          const constructedPath = path.join(torrentInfo.save_path, torrentInfo.name);
+          logger.debug(`Trying constructed path: ${constructedPath}`);
+          if (fs.existsSync(constructedPath)) {
+            torrentInfo.content_path = constructedPath;
+            return torrentInfo;
+          }
+        }
+
         logger.debug(`No valid path found on attempt ${attempt}, waiting...`);
       }
 
