@@ -32,3 +32,10 @@ export interface ExecResult {
     stdout: string;
     stderr: string;
 }
+
+export interface QBittorrentPaths {
+  basePath: string;
+  downloadPath: string;
+  completedPath: string;
+  outputPath: string;
+}

@@ -20,8 +20,7 @@ const USE_PLEX = process.env.USE_PLEX;
 const QBITTORRENT_BASE_PATH = process.env.QBITTORRENT_BASE_PATH || '/mnt/unionfs/downloads/torrents/qbittorrent';
 const QBITTORRENT_DOWNLOAD_PATH = path.join(QBITTORRENT_BASE_PATH, 'incoming');
 const QBITTORRENT_COMPLETED_PATH = path.join(QBITTORRENT_BASE_PATH, 'completed');
-const QBITTORRENT_TORRENTS_PATH = path.join(QBITTORRENT_BASE_PATH, 'torrents');
-const QBITTORRENT_WATCHED_PATH = path.join(QBITTORRENT_BASE_PATH, 'watched');
+const AUDIOBOOK_OUTPUT_PATH = process.env.AUDIOBOOK_OUTPUT_PATH || '/mnt/unionfs/Media/Audiobooks';
 
 // Checking if the required environment variables are defined
 if (!QBITTORRENT_HOST || !QBITTORRENT_USERNAME || !QBITTORRENT_PASSWORD) {
@@ -378,14 +377,14 @@ async function runCurlCommand(): Promise<void> {
 // Add new function to handle moving files
 async function moveCompletedDownload(torrentName: string, contentPath: string): Promise<void> {
   try {
-    if (!QBITTORRENT_COMPLETED_PATH) {
-      logger.warn('QBITTORRENT_COMPLETED_PATH not set, skipping move operation');
+    if (!AUDIOBOOK_OUTPUT_PATH) {
+      logger.warn('AUDIOBOOK_OUTPUT_PATH not set, skipping move operation');
       return;
     }
 
     logger.info(`Starting move operation for ${torrentName}`);
     logger.debug(`Source path: ${contentPath}`);
-    logger.debug(`Destination base path: ${QBITTORRENT_COMPLETED_PATH}`);
+    logger.debug(`Final destination path: ${AUDIOBOOK_OUTPUT_PATH}`);
 
     // Ensure source exists
     if (!fs.existsSync(contentPath)) {
@@ -408,7 +407,7 @@ async function moveCompletedDownload(torrentName: string, contentPath: string): 
       }
 
       // Create author/book directory structure
-      const destinationDir = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
+      const destinationDir = path.join(AUDIOBOOK_OUTPUT_PATH, torrentName);
       if (!fs.existsSync(destinationDir)) {
         fs.mkdirSync(destinationDir, { recursive: true });
       }
@@ -434,7 +433,7 @@ async function moveCompletedDownload(torrentName: string, contentPath: string): 
         throw new Error('Downloaded file is not a supported audio format');
       }
 
-      const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
+      const destinationPath = path.join(AUDIOBOOK_OUTPUT_PATH, torrentName);
       const destinationDir = path.dirname(destinationPath);
 
       // Create directory if it doesn't exist
@@ -448,13 +447,13 @@ async function moveCompletedDownload(torrentName: string, contentPath: string): 
       fs.unlinkSync(contentPath);
     }
 
-    logger.info(`Successfully moved ${torrentName} to ${QBITTORRENT_COMPLETED_PATH}`);
+    logger.info(`Successfully moved ${torrentName} to ${AUDIOBOOK_OUTPUT_PATH}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error(`Failed to move completed download: ${errorMessage}`);
     logger.error(`Move operation failed for torrent: ${torrentName}`);
     logger.error(`Source path: ${contentPath}`);
-    logger.error(`Destination path: ${QBITTORRENT_COMPLETED_PATH}`);
+    logger.error(`Destination path: ${AUDIOBOOK_OUTPUT_PATH}`);
     throw error;
   }
 }
@@ -612,7 +611,7 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
                 logger.debug(`Content path for ${torrent.name}: ${contentPath}`);
 
                 // Move the completed download if path is configured
-                if (QBITTORRENT_COMPLETED_PATH) {
+                if (AUDIOBOOK_OUTPUT_PATH) {
                   try {
                     await moveCompletedDownload(torrent.name, contentPath);
                     logger.info(`Successfully processed move for: ${torrent.name}`);
