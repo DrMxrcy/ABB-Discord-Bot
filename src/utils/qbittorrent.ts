@@ -1,9 +1,9 @@
-import { logger } from '../bot.ts'; 
+import { logger } from '../bot'; 
 import { QBittorrent } from '@ctrl/qbittorrent';
 import dotenv from "dotenv";
 import { exec as execCb } from 'child_process';
-import { Client, ButtonInteraction } from 'discord.js';
-import { senddownloadEmbed, senddownloadcompleteDM } from './sendEmbed.ts';
+import { Client } from 'discord.js';
+import { senddownloadEmbed, senddownloadcompleteDM } from './sendEmbed';
 import { promisify } from 'util';
 import { QBittorrentConfig, Task, TorrentData, AllData, DownloadingData, ExecResult } from '../interface/qbittorrent.interface';
 import fs from 'fs';
@@ -544,7 +544,7 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
             try {
               // Get torrent info with retry
               const torrentInfo = await retry(() => qbittorrent.getTorrent(torrent.id));
-              const contentPath = torrentInfo.content_path;
+              const contentPath = torrentInfo.state.downloadPath || torrentInfo.savePath;
 
               if (!contentPath) {
                 throw new Error('Content path is undefined');

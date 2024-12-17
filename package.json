@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx watch src/bot.ts",
     "deploy": "tsx src/deploy-commands.ts",
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "start": "node dist/src/bot.js",
     "build:ci": "tsc"
   },
