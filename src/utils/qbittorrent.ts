@@ -474,6 +474,24 @@ function parseBookName(bookName: string): BookInfo {
   return bookInfo;
 }
 
+// Add retry utility
+async function retry<T>(
+  operation: () => Promise<T>,
+  retries = 3,
+  delay = 1000
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (retries > 0) {
+      logger.warn(`Operation failed, retrying in ${delay}ms. Retries left: ${retries}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return retry(operation, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
+
 // Function to handle downloads
 export async function downloadHandler(client: Client, qbittorrent: QBittorrent): Promise<void> {
     // Load the cache when the program starts
@@ -517,44 +535,65 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
   
       // Create a promise for each relevant torrent
       const promises = relevantTorrents.map(async (torrent) => {
-        // Find the torrent in the previous torrents array
         const previousTorrent = previousTorrents.find(t => t.id === torrent.id);
-  
-        // If the torrent is not downloading
+
         if (torrent.state === 'seeding') {
-          // If the torrent was not in the previous torrents array or it was downloading
           if (!previousTorrent || previousTorrent.state !== 'seeding') {
             logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
             
-            // Get the content path before removing from client
-            const torrentInfo = await qbittorrent.getTorrent(torrent.id);
-            const contentPath = torrentInfo.content_path;
+            try {
+              // Get torrent info with retry
+              const torrentInfo = await retry(() => qbittorrent.getTorrent(torrent.id));
+              const contentPath = torrentInfo.content_path;
 
-            // Move the completed download if path is configured
-            if (QBITTORRENT_COMPLETED_PATH) {
-              await moveCompletedDownload(torrent.name, contentPath, isDownloading.get(torrent.id)!);
-            }
-
-            if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
-              await runCurlCommand();
-            }
-
-            // Log a message, run the curl command, remove the torrent from qbittorrent, and log the result
-            logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
-            const result = await qbittorrent.removeTorrent(torrent.id, false);
-            logger.info(`Removal result for ${torrent.name}: ${result}`);
-  
-            // If the torrent is in the isDownloading map
-            if (isDownloading.has(torrent.id)) {
-              // Get the user data, send a download complete DM, remove the torrent from the isDownloading map, and log the number of items in the map
-              const userData: DownloadingData = isDownloading.get(torrent.id)!;
-              // Only send the DM if the torrent has just finished downloading
-              if (!previousTorrent || previousTorrent.state !== 'seeding') {
-                await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
+              if (!contentPath) {
+                throw new Error('Content path is undefined');
               }
-              isDownloading.delete(torrent.id);
-              logger.info('Number of items Downloading: ' + isDownloading.size);
-            } 
+
+              // Verify file exists before moving
+              if (!fs.existsSync(contentPath)) {
+                throw new Error(`Content path does not exist: ${contentPath}`);
+              }
+
+              // Move the completed download if path is configured
+              if (QBITTORRENT_COMPLETED_PATH) {
+                await moveCompletedDownload(torrent.name, contentPath, isDownloading.get(torrent.id)!);
+                
+                // Verify move was successful
+                const userData = isDownloading.get(torrent.id)!;
+                const bookInfo = parseBookName(userData.bookName);
+                const expectedPath = path.join(QBITTORRENT_COMPLETED_PATH, bookInfo.author);
+                
+                if (!fs.existsSync(expectedPath)) {
+                  throw new Error('Move operation failed - destination path does not exist');
+                }
+              }
+
+              // Only remove from qBittorrent after successful move
+              logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
+              const result = await retry(() => qbittorrent.removeTorrent(torrent.id, false));
+              logger.info(`Removal result for ${torrent.name}: ${result}`);
+
+              // Trigger Plex scan after successful move
+              if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
+                await runCurlCommand();
+              }
+
+              // Handle completion notifications
+              if (isDownloading.has(torrent.id)) {
+                const userData = isDownloading.get(torrent.id)!;
+                if (!previousTorrent || previousTorrent.state !== 'seeding') {
+                  await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
+                }
+                isDownloading.delete(torrent.id);
+                logger.info('Number of items Downloading: ' + isDownloading.size);
+              }
+
+            } catch (error) {
+              logger.error(`Failed to process completed download for ${torrent.name}: ${error}`);
+              // Don't remove the torrent if processing failed
+              return;
+            }
           }
         }
         // If the torrent is downloading and it's a new download
@@ -582,7 +621,7 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
       //saveCache(isDownloading);
     } catch (error) {
       // If an error occurred, log it
-      logger.error(`Error while checking torrents: ${(error as Error).message}, Stack: ${(error as Error).stack}`);
+      logger.error(`Error while checking torrents: ${error}`);
     }
   };
 
