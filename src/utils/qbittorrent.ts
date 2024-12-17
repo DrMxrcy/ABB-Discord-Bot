@@ -485,7 +485,7 @@ async function ensureAuthenticated(): Promise<void> {
   }
 }
 
-// Update the isTorrentReadyForProcessing function with all valid completed states
+// Update the isTorrentReadyForProcessing function with more detailed logging
 function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
   const readyStates = [
     'uploading',     // Being seeded and data is being transferred
@@ -493,12 +493,18 @@ function isTorrentReadyForProcessing(torrent: TorrentData): boolean {
     'queuedUP',      // Queued for upload after completion
     'stalledUP',     // Seeding but no connections
     'checkingUP',    // Finished downloading and being checked
-    'forcedUP'       // Forced uploading
+    'forcedUP',      // Forced uploading
+    'seeding'        // Add explicit seeding state
   ];
   const hasValidState = readyStates.includes(torrent.state);
   const progress = torrent.progress || 0;
   
-  logger.debug(`Torrent ${torrent.name} state: ${torrent.state}, progress: ${progress}, Ready: ${hasValidState}`);
+  logger.debug(`Torrent ${torrent.name}:`);
+  logger.debug(`- State: ${torrent.state}`);
+  logger.debug(`- Progress: ${progress}`);
+  logger.debug(`- Valid State: ${hasValidState}`);
+  logger.debug(`- Ready for Processing: ${hasValidState && progress >= 1}`);
+  
   return hasValidState && progress >= 1;
 }
 
@@ -583,18 +589,20 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
   // Function to check the torrents
   const checkTorrents = async (): Promise<void> => {
     try {
-      // Ensure we're authenticated before making any requests
       await ensureAuthenticated();
-
-      // Get all the data from qbittorrent
       const allData: AllData = await qbittorrent.getAllData();
-
-      // Get the torrents from the data
       const torrents: TorrentData[] = allData.torrents;
-  
-      // Filter out torrents that were not added by this application
+
+      // Log all torrents and their states
+      torrents.forEach(torrent => {
+        logger.debug(`Found torrent: ${torrent.name} (${torrent.id})`);
+        logger.debug(`- State: ${torrent.state}`);
+        logger.debug(`- Progress: ${torrent.progress}`);
+      });
+
       const relevantTorrents = torrents.filter(torrent => isDownloading.has(torrent.id));
-  
+      logger.debug(`Found ${relevantTorrents.length} relevant torrents`);
+
       // If there are no relevant torrents, log a message and set the wasQueueEmpty flag to true
       if (relevantTorrents.length === 0) {
         if (!wasQueueEmpty) {
@@ -611,8 +619,11 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
       const promises = relevantTorrents.map(async (torrent) => {
         try {
           const previousTorrent = previousTorrents.find(t => t.id === torrent.id);
+          logger.debug(`Processing torrent: ${torrent.name}`);
+          logger.debug(`Current state: ${torrent.state}, Previous state: ${previousTorrent?.state}`);
 
           if (isTorrentReadyForProcessing(torrent)) {
+            logger.info(`Torrent ${torrent.name} is ready for processing`);
             if (!previousTorrent || !isTorrentReadyForProcessing(previousTorrent)) {
               logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
               
@@ -659,21 +670,8 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
                 logger.error(`Error processing completed torrent ${torrent.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
               }
             }
-          }
-          // Add back the downloading state handling
-          else if (torrent.state === 'downloading') {
-            // If it's a new download or wasn't downloading before
-            if (!previousTorrent || previousTorrent.state !== 'downloading') {
-              if (isDownloading.has(torrent.id)) {
-                const userData = isDownloading.get(torrent.id)!;
-                logger.info(`Audiobook: ${userData.bookName} is downloading.`);
-                if (!userData.embedSent) {
-                  await senddownloadEmbed(userData.i, userData.userId, { name: userData.bookName });
-                  userData.embedSent = true;
-                }
-                logger.info('Number of items Downloading: ' + isDownloading.size);
-              }
-            }
+          } else {
+            logger.debug(`Torrent ${torrent.name} is not ready for processing yet`);
           }
         } catch (error) {
           logger.error(`Error processing torrent ${torrent.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -699,8 +697,9 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
     }
   };
 
-  // Check the torrents every 30 seconds
-  setInterval(checkTorrents, 30000); 
+  // Check the torrents more frequently during development
+  const checkInterval = process.env.NODE_ENV === 'development' ? 5000 : 30000;
+  setInterval(checkTorrents, checkInterval);
   } catch (error) {
     logger.error(`Failed to start download handler: ${error instanceof Error ? error.message : 'Unknown error'}`);
     throw error;
