@@ -1,16 +1,13 @@
-import { logger } from '../bot'; 
+import { logger } from '../bot.ts'; 
 import { QBittorrent } from '@ctrl/qbittorrent';
 import dotenv from "dotenv";
 import { exec as execCb } from 'child_process';
-import { Client } from 'discord.js';
-import { senddownloadEmbed, senddownloadcompleteDM } from './sendEmbed';
+import { Client, ButtonInteraction } from 'discord.js';
+import { senddownloadEmbed, senddownloadcompleteDM } from './sendEmbed.ts';
 import { promisify } from 'util';
 import { QBittorrentConfig, Task, TorrentData, AllData, DownloadingData, ExecResult } from '../interface/qbittorrent.interface';
 import fs from 'fs';
 import path from 'path';
-import axios from 'axios';
-import NodeCache from 'node-cache';
-import rateLimit from 'axios-rate-limit';
 
 dotenv.config();
 
@@ -219,275 +216,26 @@ async function runCurlCommand(): Promise<void> {
   }
 }
 
-// Initialize cache with 24 hour TTL
-const metadataCache = new NodeCache({ 
-  stdTTL: 86400, // 24 hours in seconds
-  checkperiod: 3600 // Check for expired entries every hour
-});
-
-// Create rate-limited axios instance
-const axiosRateLimit = rateLimit(axios.create(), { 
-  maxRequests: 2, // Maximum of 2 requests
-  perMilliseconds: 1000, // Per second
-  maxRPS: 2 // Rate limit of 2 requests per second
-});
-
-interface AudnexusMetadata {
-  title: string;
-  authors: Array<{
-    name: string;
-    role: string;
-  }>;
-  series?: {
-    name: string;
-    position: string;
-  };
-  narrators: string[];
-  genres: string[];
-  publishedYear?: number;
-  asin?: string;
-  duration?: string;
-  region?: string;
-  language?: string;
-  description?: string;
-  rating?: {
-    average?: number;
-    count?: number;
-  };
-}
-
-async function getAudnexusMetadata(bookName: string): Promise<AudnexusMetadata | null> {
-  try {
-    // Generate cache key
-    const cacheKey = `audnexus:${bookName.toLowerCase().trim()}`;
-
-    // Check cache first
-    const cachedData = metadataCache.get<AudnexusMetadata>(cacheKey);
-    if (cachedData) {
-      logger.debug(`Using cached metadata for: ${bookName}`);
-      return cachedData;
-    }
-
-    // If not in cache, fetch from API with rate limiting
-    logger.debug(`Fetching Audnexus metadata for: ${bookName}`);
-    const response = await axiosRateLimit.get(`https://api.audnex.us/books/search`, {
-      params: {
-        q: bookName,
-        limit: 1
-      },
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'ABB-Discord-Bot/1.0'
-      }
-    });
-
-    if (response.data && response.data.length > 0) {
-      const metadata = response.data[0];
-      
-      // Store in cache
-      metadataCache.set(cacheKey, metadata);
-      
-      // Log successful fetch
-      logger.info(`Successfully fetched metadata for: ${bookName}`);
-      logger.debug(`Metadata: ${JSON.stringify(metadata, null, 2)}`);
-      
-      return metadata;
-    }
-
-    // If no results found, cache null result to prevent repeated lookups
-    metadataCache.set(cacheKey, null, 3600); // Cache miss for 1 hour
-    logger.warn(`No metadata found for: ${bookName}`);
-    return null;
-
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      if (error.response?.status === 429) {
-        logger.error(`Rate limit exceeded for Audnexus API: ${error.message}`);
-      } else {
-        logger.error(`Audnexus API error: ${error.message}`);
-      }
-    } else {
-      logger.error(`Failed to fetch Audnexus metadata: ${error}`);
-    }
-    return null;
-  }
-}
-
-// Add cache management functions
-export function clearMetadataCache(): void {
-  metadataCache.flushAll();
-  logger.info('Metadata cache cleared');
-}
-
-export function getMetadataCacheStats(): {
-  keys: number;
-  hits: number;
-  misses: number;
-  ksize: number;
-  vsize: number;
-} {
-  return metadataCache.getStats();
-}
-
 // Add new function to handle moving files
-async function moveCompletedDownload(torrentName: string, contentPath: string, userData: DownloadingData): Promise<void> {
+async function moveCompletedDownload(torrentName: string, contentPath: string): Promise<void> {
   try {
     if (!QBITTORRENT_COMPLETED_PATH) {
       logger.debug('No completed path specified, skipping file move');
       return;
     }
 
-    // Try to get metadata from Audnexus
-    const metadata = await getAudnexusMetadata(userData.bookName);
-    let destinationPath: string;
-
-    if (metadata) {
-      const author = metadata.authors.find(a => a.role === 'author')?.name || 'Unknown Author';
-      const narrator = metadata.narrators[0] || 'Unknown Narrator';
-      const year = metadata.publishedYear ? `(${metadata.publishedYear})` : '';
-      const language = metadata.language ? `[${metadata.language}]` : '';
-      
-      destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, sanitizePath(author));
-
-      if (metadata.series) {
-        const seriesFolder = `${sanitizePath(metadata.series.name)} [${metadata.series.position}]`;
-        destinationPath = path.join(destinationPath, seriesFolder);
-      }
-
-      const bookFolder = `${sanitizePath(metadata.title)} ${year} ${language} [${sanitizePath(narrator)}]`;
-      destinationPath = path.join(destinationPath, bookFolder);
-
-      // Create metadata files
-      await createMetadataFiles(destinationPath, metadata);
-    } else {
-      // Fallback to basic parsing if no Audnexus metadata
-      const bookInfo = parseBookName(userData.bookName);
-      destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, bookInfo.author);
-      if (bookInfo.series) {
-        destinationPath = path.join(destinationPath, bookInfo.series);
-      }
-      destinationPath = path.join(destinationPath, torrentName);
+    const destinationPath = path.join(QBITTORRENT_COMPLETED_PATH, torrentName);
+    
+    // Create author directory if it doesn't exist
+    if (!fs.existsSync(destinationPath)) {
+      fs.mkdirSync(destinationPath, { recursive: true });
     }
-
-    // Create directories if they don't exist
-    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
 
     // Move the content
     fs.renameSync(contentPath, destinationPath);
     logger.info(`Moved completed download to ${destinationPath}`);
-
   } catch (error) {
     logger.error(`Failed to move completed download: ${error}`);
-    throw error;
-  }
-}
-
-async function createMetadataFiles(destinationPath: string, metadata: AudnexusMetadata): Promise<void> {
-  try {
-    // Create book-info.json
-    const metadataPath = path.join(destinationPath, 'book-info.json');
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
-
-    // Create NFO file for media players
-    const nfoContent = generateNFO(metadata);
-    const nfoPath = path.join(destinationPath, 'audiobook.nfo');
-    fs.writeFileSync(nfoPath, nfoContent);
-
-  } catch (error) {
-    logger.error(`Failed to create metadata files: ${error}`);
-  }
-}
-
-function generateNFO(metadata: AudnexusMetadata): string {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<audioBookInfo>
-    <title>${metadata.title}</title>
-    <author>${metadata.authors.find(a => a.role === 'author')?.name || 'Unknown'}</author>
-    <narrator>${metadata.narrators.join(', ')}</narrator>
-    ${metadata.series ? `<series>${metadata.series.name}</series>
-    <seriesPosition>${metadata.series.position}</seriesPosition>` : ''}
-    <year>${metadata.publishedYear || ''}</year>
-    <genre>${metadata.genres.join(', ')}</genre>
-    <description>${metadata.description || ''}</description>
-    <duration>${metadata.duration || ''}</duration>
-    <language>${metadata.language || ''}</language>
-    ${metadata.rating ? `<rating>${metadata.rating.average || ''}</rating>
-    <ratingCount>${metadata.rating.count || ''}</ratingCount>` : ''}
-    <asin>${metadata.asin || ''}</asin>
-</audioBookInfo>`;
-}
-
-function sanitizePath(str: string): string {
-  return str
-    .replace(/[<>:"/\\|?*]/g, '') // Remove invalid characters
-    .replace(/\s+/g, ' ')         // Normalize spaces
-    .trim();
-}
-
-interface BookInfo {
-  author: string;
-  series?: string;
-  title: string;
-}
-
-function parseBookName(bookName: string): BookInfo {
-  // Common patterns in audiobook names:
-  // "Author Name - Series Name 01 - Book Title"
-  // "Author Name - Book Title"
-  
-  const bookInfo: BookInfo = {
-    author: "Unknown Author",
-    title: bookName
-  };
-
-  try {
-    // Split by " - "
-    const parts = bookName.split(" - ");
-    
-    if (parts.length >= 2) {
-      bookInfo.author = parts[0].trim();
-      
-      // Check if middle part contains series info (usually has numbers)
-      if (parts.length === 3 && /\d/.test(parts[1])) {
-        bookInfo.series = parts[1].trim();
-        bookInfo.title = parts[2].trim();
-      } else {
-        bookInfo.title = parts[1].trim();
-      }
-    }
-
-    // Clean up author name
-    bookInfo.author = bookInfo.author.replace(/[<>:"/\\|?*]/g, '');
-    
-    // Clean up series name if it exists
-    if (bookInfo.series) {
-      bookInfo.series = bookInfo.series.replace(/[<>:"/\\|?*]/g, '');
-    }
-    
-    // Clean up title
-    bookInfo.title = bookInfo.title.replace(/[<>:"/\\|?*]/g, '');
-
-  } catch (error) {
-    logger.error(`Error parsing book name "${bookName}": ${error}`);
-  }
-
-  return bookInfo;
-}
-
-// Add retry utility
-async function retry<T>(
-  operation: () => Promise<T>,
-  retries = 3,
-  delay = 1000
-): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (retries > 0) {
-      logger.warn(`Operation failed, retrying in ${delay}ms. Retries left: ${retries}`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return retry(operation, retries - 1, delay * 2);
-    }
     throw error;
   }
 }
@@ -535,65 +283,44 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
   
       // Create a promise for each relevant torrent
       const promises = relevantTorrents.map(async (torrent) => {
+        // Find the torrent in the previous torrents array
         const previousTorrent = previousTorrents.find(t => t.id === torrent.id);
-
+  
+        // If the torrent is not downloading
         if (torrent.state === 'seeding') {
+          // If the torrent was not in the previous torrents array or it was downloading
           if (!previousTorrent || previousTorrent.state !== 'seeding') {
             logger.info(`AudioBook: ${torrent.name} is complete. Processing...`);
             
-            try {
-              // Get torrent info with retry
-              const torrentInfo = await retry(() => qbittorrent.getTorrent(torrent.id));
-              const contentPath = torrentInfo.state.downloadPath || torrentInfo.savePath;
+            // Get the content path before removing from client
+            const torrentInfo = await qbittorrent.getTorrent(torrent.id);
+            const contentPath = torrentInfo.content_path;
 
-              if (!contentPath) {
-                throw new Error('Content path is undefined');
-              }
-
-              // Verify file exists before moving
-              if (!fs.existsSync(contentPath)) {
-                throw new Error(`Content path does not exist: ${contentPath}`);
-              }
-
-              // Move the completed download if path is configured
-              if (QBITTORRENT_COMPLETED_PATH) {
-                await moveCompletedDownload(torrent.name, contentPath, isDownloading.get(torrent.id)!);
-                
-                // Verify move was successful
-                const userData = isDownloading.get(torrent.id)!;
-                const bookInfo = parseBookName(userData.bookName);
-                const expectedPath = path.join(QBITTORRENT_COMPLETED_PATH, bookInfo.author);
-                
-                if (!fs.existsSync(expectedPath)) {
-                  throw new Error('Move operation failed - destination path does not exist');
-                }
-              }
-
-              // Only remove from qBittorrent after successful move
-              logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
-              const result = await retry(() => qbittorrent.removeTorrent(torrent.id, false));
-              logger.info(`Removal result for ${torrent.name}: ${result}`);
-
-              // Trigger Plex scan after successful move
-              if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
-                await runCurlCommand();
-              }
-
-              // Handle completion notifications
-              if (isDownloading.has(torrent.id)) {
-                const userData = isDownloading.get(torrent.id)!;
-                if (!previousTorrent || previousTorrent.state !== 'seeding') {
-                  await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
-                }
-                isDownloading.delete(torrent.id);
-                logger.info('Number of items Downloading: ' + isDownloading.size);
-              }
-
-            } catch (error) {
-              logger.error(`Failed to process completed download for ${torrent.name}: ${error}`);
-              // Don't remove the torrent if processing failed
-              return;
+            // Move the completed download if path is configured
+            if (QBITTORRENT_COMPLETED_PATH) {
+              await moveCompletedDownload(torrent.name, contentPath);
             }
+
+            if (USE_PLEX === 'TRUE' && PLEX_HOST && PLEX_TOKEN && PLEX_LIBRARY_NUM) {
+              await runCurlCommand();
+            }
+
+            // Log a message, run the curl command, remove the torrent from qbittorrent, and log the result
+            logger.info(`AudioBook: ${torrent.name} is complete. Removing from client.`);
+            const result = await qbittorrent.removeTorrent(torrent.id, false);
+            logger.info(`Removal result for ${torrent.name}: ${result}`);
+  
+            // If the torrent is in the isDownloading map
+            if (isDownloading.has(torrent.id)) {
+              // Get the user data, send a download complete DM, remove the torrent from the isDownloading map, and log the number of items in the map
+              const userData: DownloadingData = isDownloading.get(torrent.id)!;
+              // Only send the DM if the torrent has just finished downloading
+              if (!previousTorrent || previousTorrent.state !== 'seeding') {
+                await senddownloadcompleteDM(client, userData.userId, { name: userData.bookName }, USE_PLEX);
+              }
+              isDownloading.delete(torrent.id);
+              logger.info('Number of items Downloading: ' + isDownloading.size);
+            } 
           }
         }
         // If the torrent is downloading and it's a new download
@@ -621,7 +348,7 @@ export async function downloadHandler(client: Client, qbittorrent: QBittorrent):
       //saveCache(isDownloading);
     } catch (error) {
       // If an error occurred, log it
-      logger.error(`Error while checking torrents: ${error}`);
+      logger.error(`Error while checking torrents: ${(error as Error).message}, Stack: ${(error as Error).stack}`);
     }
   };
 

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { audiobookBayUrl } from "../constants.ts";
 import { logger } from '../bot.ts'; 
 
 /**
@@ -8,21 +9,23 @@ import { logger } from '../bot.ts';
  * If the status is anything else, it logs that the site is down or redirecting and returns false.
  * If there's an error with the request, it logs the error and returns false.
  */
-export async function siteTest(): Promise<boolean> {
-  const url = process.env.AUDIOBOOK_BAY_URL;
-  if (!url) {
-    logger.error('AUDIOBOOK_BAY_URL is not defined');
-    return false;
-  }
-  
+export async function testSite() {
   try {
-    const response = await axios.get(url);
-    if (response.status === 200) {
-      logger.info(`${url} is up!!`);
+    const response = await axios.get(audiobookBayUrl, {
+      timeout: 5000, // Wait for 5 seconds
+    });
+
+    // handle success
+    if(response.status === 200 || response.status === 201 || response.status === 202){
+      logger.info(`${audiobookBayUrl} is up!!`);
       return true;
+    } else {
+      logger.error(`${audiobookBayUrl} is down or redirecting!!`);
+      return false;
     }
   } catch (error) {
-    logger.error(`Error checking site: ${error}`);
+    // handle error
+    logger.error(`Error: ${error}`);
+    return false;
   }
-  return false;
 }
